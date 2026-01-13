@@ -1,123 +1,141 @@
-from PIL import Image
+import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2
+
+# --- CONSTANTS ---
+GAP_LINE = 5
+GAP_WORD = 5
+GAP_SYMBOL = 1
+CANVAS_SIZE = 28
+SYMBOL_MAX_DIM = 20
 
 
-def resize_to_28x28(symbol):
-    # Get original dimensions
-    original_height, original_width = symbol.shape
+def show_projection(img_slice, projection, title="Projection"):
+    """
+    Displays the image slice and its corresponding projection graph.
+    """
+    plt.figure(figsize=(8, 4))
 
-    # Set up a 28x28 canvas with white background (255 for binary image)
-    canvas = np.ones((28, 28), dtype=np.uint8) * 255
+    # Plot the image slice
+    plt.subplot(1, 2, 1)
+    plt.imshow(img_slice, cmap='gray')
+    plt.title(f"Image: {title}")
+    plt.axis('off')
 
-    # Calculate new dimensions to fit the symbol while maintaining aspect ratio
-    aspect_ratio = original_width / original_height
+    # Plot the projection graph
+    plt.subplot(1, 2, 2)
+    # If it's a vertical projection, we plot normally.
+    # If it's horizontal, we plot vertically to match the image rows.
+    plt.plot(projection)
+    plt.title(f"{title} Projection Sum")
+    plt.fill_between(range(len(projection)), projection, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def get_segments(projection, min_gap=5, min_size=2, debug_title=None, img_slice=None):
+    """
+    Finds start/end indices and optionally visualizes the process.
+    """
+    # Visualization trigger
+    if debug_title and img_slice is not None:
+        show_projection(img_slice, projection, debug_title)
+
+    content_indices = np.where(projection > 0)[0]
+    if len(content_indices) == 0:
+        return []
+
+    segments = []
+    start = content_indices[0]
+
+    for i in range(len(content_indices) - 1):
+        if content_indices[i + 1] - content_indices[i] > min_gap:
+            end = content_indices[i]
+            if end - start >= min_size:
+                segments.append((start, end))
+            start = content_indices[i + 1]
+
+    if content_indices[-1] - start >= min_size:
+        segments.append((start, content_indices[-1]))
+    return segments
+
+
+def resize_to_canvas(symbol_img, canvas_size=28, target_dim=20):
+    """
+    Resizes a symbol with safety checks for zero-dimension images.
+    """
+    h, w = symbol_img.shape
+
+    # SAFETY: If symbol is empty or essentially invisible, return a blank canvas
+    if h == 0 or w == 0:
+        return np.ones((canvas_size, canvas_size), dtype=np.uint8) * 255
+
+    aspect_ratio = w / h
+
     if aspect_ratio > 1:
-        # Wider than tall, width is set to 20 and height scaled accordingly
-        new_width = 20
-        new_height = int(20 / aspect_ratio)
+        new_w = target_dim
+        new_h = max(1, int(target_dim / aspect_ratio))  # Ensure at least 1px
     else:
-        # Taller than wide, height is set to 20 and width scaled accordingly
-        new_height = 20
-        new_width = int(20 * aspect_ratio)
+        new_h = target_dim
+        new_w = max(1, int(target_dim * aspect_ratio))  # Ensure at least 1px
 
-    # Resize the symbol to the new dimensions
-    resized_symbol = cv2.resize(symbol, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(symbol_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    # Calculate padding to center the resized symbol within the 28x28 canvas
-    x_offset = (28 - new_width) // 2
-    y_offset = (28 - new_height) // 2
-
-    # Place the resized symbol in the center of the 28x28 canvas
-    canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized_symbol
+    canvas = np.ones((canvas_size, canvas_size), dtype=np.uint8) * 255
+    x_off = (canvas_size - new_w) // 2
+    y_off = (canvas_size - new_h) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
 
     return canvas
 
 
-image_name = 'test.png'
-image_path = 'testDigitalImage/' + image_name
-img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+def process_text_image(image_path):
+    # Load and Preprocess
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print("Error: Image not found.")
+        return
 
-_, bin_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+    # Invert binary image: text becomes > 0 (white), background becomes 0 (black)
+    _, bin_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
 
-horizontal_projection = np.sum(bin_img, axis=1)
+    # 1. Extract Lines
+    image_sum = np.sum(bin_img, axis=1)
+    line_segments = get_segments(image_sum, min_gap=GAP_LINE, debug_title="Lines", img_slice=bin_img)
 
-# plt.figure(figsize=(10, 6))
-# plt.subplot(2, 1, 1)
-# plt.imshow(img)
-# plt.subplot(2, 1, 2)
-# plt.plot(horizontal_projection)
-# plt.title("Sum of Pixels Along Rows (Line Detection)")
-# plt.xlabel("Row Index")
-# plt.ylabel("Sum of Pixel Values")
-# plt.show()
+    all_symbols = []
 
-lines_sum = [i for i in range(len(horizontal_projection)) if horizontal_projection[i] > 0]
+    for l_start, l_end in line_segments:
+        line_bin = bin_img[l_start:l_end, :]
 
-start = lines_sum[0]
-lines = []
-for i in range(len(lines_sum) - 1):
-    if lines_sum[i + 1] - lines_sum[i] > 5:
-        lines.append((start, lines_sum[i]))
-        start = lines_sum[i + 1]
-lines.append((start, lines_sum[-1]))
+        # 2. Extract Words in Line
+        word_segments = get_segments(np.sum(line_bin, axis=0), min_gap=GAP_WORD)
 
-lines = [(start - 4, end + 4) for start, end in lines]
-print('\n'.join([str(i) for i in lines]))
-for start, end in lines:
-    line_bin = bin_img[start:end, :]
+        for w_start, w_end in word_segments:
+            word_bin = line_bin[:, w_start:w_end]
 
-    # plt.figure(figsize=(10, 6))
-    # plt.imshow(line_bin)
-    # plt.title("Line")
-    # plt.show()
+            # 3. Extract Symbols in Word
+            symbol_segments = get_segments(np.sum(word_bin, axis=0), min_gap=GAP_SYMBOL)
 
-    vertical_sum = np.sum(line_bin, axis=0)
+            for s_start, s_end in symbol_segments:
+                # Extract actual symbol from original grayscale or binary
+                symbol_raw = word_bin[:, s_start:s_end]
 
-    words_sum = [i for i in range(len(vertical_sum)) if vertical_sum[i] > 0]
+                # Standardize to 28x28
+                symbol_final = resize_to_canvas(symbol_raw)
+                all_symbols.append(symbol_final)
 
-    word_start = words_sum[0]
-    words = []
-    for i in range(len(words_sum) - 1):
-        if words_sum[i + 1] - words_sum[i] > 5:
-            words.append((word_start, words_sum[i]))
-            word_start = words_sum[i + 1]
-    words.append((word_start, words_sum[-1]))
-    words = [(word_start - 2, word_end + 2) for word_start, word_end in words]
-    for word_start, word_end in words:
-        word_bin = line_bin[:, word_start:word_end]
+    return all_symbols
 
-        word_vert_sum = np.sum(word_bin, axis=0)
-        plt.figure(figsize=(6, 10))
-        plt.subplot(2, 1, 1)
-        plt.imshow(word_bin)
-        plt.subplot(2, 1, 2)
-        plt.plot(word_vert_sum)
-        plt.show()
 
-        sym_sum = [i for i in range(len(word_vert_sum)) if word_vert_sum[i] > 0]
+image_source = "testImages/test2.jpg"
+symbols = process_text_image(image_source)
 
-        sym_start = sym_sum[0]
-        symbols = []
-        for i in range(len(sym_sum) - 1):
-            if sym_sum[i + 1] - sym_sum[i] > 1:
-                symbols.append((sym_start, sym_sum[i]))
-                sym_start = sym_sum[i + 1]
-        symbols.append((sym_start, sym_sum[-1]))
-
-        for sym_start, sym_end in symbols:
-            word = img[start:end, word_start:word_end]
-            sym_bin = word[:, sym_start:sym_end]
-
-            plt.figure(figsize=(10, 6))
-            plt.imshow(sym_bin)
-            plt.title("Symbol")
-            plt.show()
-
-            sym28x28 = resize_to_28x28(sym_bin)
-
-            plt.figure(figsize=(10, 6))
-            plt.imshow(sym28x28)
-            plt.title("Symbol")
-            plt.show()
+# Quick preview of the first 5 symbols
+if symbols:
+    fig, axes = plt.subplots(1, min(len(symbols), 5), figsize=(15, 3))
+    for i, ax in enumerate(axes):
+        ax.imshow(symbols[i], cmap='gray')
+        ax.axis('off')
+    plt.show()
