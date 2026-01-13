@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- CONSTANTS ---
+# --- CONSTANTS FOR DIGITAL IMAGES ---
 GAP_LINE = 5
 GAP_WORD = 5
 GAP_SYMBOL = 1
